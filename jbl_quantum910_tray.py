@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 VENDOR_ID_HEX = "0ecb"
 PRODUCT_ID_HEX = "2088"
@@ -429,10 +429,11 @@ class BatteryTrayApp:
         return [r for r in readers if r is not None]
 
     def _last_error(self) -> Optional[str]:
-        for reader in self._readers():
-            if reader.last_error:
-                return reader.last_error
-        return None
+        """Return an error only when no reader is healthy (one working source is enough)."""
+        errors = [reader.last_error for reader in self._readers()]
+        if not errors or not all(errors):
+            return None
+        return errors[0]
 
     def _read_all_once(self) -> tuple[Optional[BatterySample], Optional[MuteSample]]:
         """
