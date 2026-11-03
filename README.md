@@ -1,5 +1,8 @@
 # JBL Quantum910 Battery Tray (Linux)
 
+[![CI](https://github.com/plugato/JBL_Baterry_Monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/plugato/JBL_Baterry_Monitor/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/plugato/JBL_Baterry_Monitor)](https://github.com/plugato/JBL_Baterry_Monitor/releases/latest)
+
 Monitor de bateria **real** para o JBL Quantum910: mostra a **% da bateria no tray** e pode iniciar automaticamente no login via **`systemd --user`**.
 
 O padrão de bateria confirmado para este headset é:
@@ -12,7 +15,7 @@ O padrão de bateria confirmado para este headset é:
 ## ✅ O que este projeto faz
 
 - **Tray/AppIndicator**: mostra “30%” no tray e atualiza automaticamente.
-- **Leitura confiável**: usa o mesmo método do `jbl_battery_simple.py` (PyUSB, interface 3).
+- **Leitura confiável**: usa o mesmo método do `jbl_battery_simple.py` (PyUSB, interface 3), com fallback para hidraw (interface 3 detectada via sysfs).
 - **Serviço no login**: instala como `systemd --user` (sem precisar de root rodando o app).
 - **Ferramentas e docs**: scripts de análise e documentação foram organizados em pastas.
 
@@ -74,9 +77,11 @@ pip3 install hidapi --user
 Para o tray, a instalação é via pacotes do sistema (não via pip):
 
 ```bash
-sudo apt install -y python3-gi gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1
+sudo apt install -y python3-gi gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1 python3-usb
 # (em algumas distros pode ser: gir1.2-appindicator3-0.1)
 ```
+
+O serviço roda com `/usr/bin/python3`, então o `pyusb` precisa estar no Python do sistema (`python3-usb`), não num venv/pyenv.
 
 ## 🖥️ Tray (AppIndicator) - Como usar
 
@@ -107,6 +112,29 @@ Para remover:
 ```bash
 chmod +x ./uninstall.sh
 ./uninstall.sh
+```
+
+### Instalar a partir de um Release
+
+```bash
+VERSION=1.1.0
+curl -LO https://github.com/plugato/JBL_Baterry_Monitor/releases/download/v${VERSION}/jbl-quantum910-tray-${VERSION}.tar.gz
+tar xzf jbl-quantum910-tray-${VERSION}.tar.gz
+cd jbl-quantum910-tray-${VERSION} && ./install.sh
+```
+
+## 🚢 CI / Deploy automático
+
+- **CI** (`.github/workflows/ci.yml`): a cada push/PR roda `ruff`, `pytest` (Python 3.9–3.13), `shellcheck` e um smoke test.
+- **Release** (`.github/workflows/release.yml`): quando o CI passa na `main` e a versão em `__version__` (`jbl_quantum910_tray.py`) ainda não tem tag, cria a tag `vX.Y.Z` e publica um GitHub Release com o `.tar.gz` + `sha256`.
+
+Para publicar uma nova versão: aumente `__version__`, faça commit e `git push` na `main`.
+
+Rodar os testes localmente:
+
+```bash
+pip install pytest ruff
+ruff check && pytest
 ```
 
 ## 🧰 Ferramentas (scripts auxiliares)

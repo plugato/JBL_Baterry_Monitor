@@ -1,0 +1,11 @@
+[tool.ruff]
+line-length = 130
+target-version = "py39"
+# tools/ contém scripts experimentais de análise; o lint cobre o app e os testes.
+include = ["jbl_quantum910_tray.py", "tests/**/*.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -27,11 +27,12 @@ if [ -e "$DEVICE_PATH" ]; then
     echo "   Permissões: $PERMS"
     echo "   Proprietário: $OWNER"
     
-    if [ "$PERMS" = "666" ] || [ "$PERMS" = "664" ]; then
+    # Considera ACL do uaccess e grupo plugdev, não só o modo numérico.
+    if [ -r "$DEVICE_PATH" ] && [ -w "$DEVICE_PATH" ]; then
         echo "   ✓ Permissões adequadas"
     else
         echo "   ⚠ Permissões podem ser insuficientes"
-        echo "   Execute: sudo chmod 666 $DEVICE_PATH"
+        echo "   Execute: sudo ./setup_udev_rules.sh"
     fi
 else
     echo "   ⚠ Caminho do dispositivo não encontrado"
@@ -53,25 +54,34 @@ echo
 
 # Verifica regras udev
 echo "4. Verificando regras udev..."
-if [ -f "/etc/udev/rules.d/99-jbl-quantum910.rules" ]; then
+if [ -f "/etc/udev/rules.d/70-jbl-quantum910.rules" ]; then
     echo "   ✓ Regra udev encontrada"
-    cat /etc/udev/rules.d/99-jbl-quantum910.rules
+    cat /etc/udev/rules.d/70-jbl-quantum910.rules
+elif [ -f "/etc/udev/rules.d/99-jbl-quantum910.rules" ]; then
+    echo "   ⚠ Regra udev antiga encontrada (MODE=0666)"
+    echo "   Atualize com: sudo ./setup_udev_rules.sh"
 else
     echo "   ⚠ Regra udev não encontrada"
-    echo "   Crie: /etc/udev/rules.d/99-jbl-quantum910.rules"
-    echo "   Com conteúdo:"
-    echo "   SUBSYSTEM==\"usb\", ATTR{idVendor}==\"0ecb\", ATTR{idProduct}==\"2088\", MODE=\"0666\""
+    echo "   Execute: sudo ./setup_udev_rules.sh"
 fi
 
 echo
 
 # Verifica bibliotecas Python
 echo "5. Verificando bibliotecas Python..."
-if python3 -c "import usb.core" 2>/dev/null; then
+# O serviço roda com /usr/bin/python3, então as libs precisam estar no Python do sistema.
+if /usr/bin/python3 -c "import usb.core" 2>/dev/null; then
     echo "   ✓ pyusb instalado"
 else
-    echo "   ⚠ pyusb não instalado"
-    echo "   Execute: pip3 install pyusb --user"
+    echo "   ⚠ pyusb não instalado no Python do sistema"
+    echo "   Execute: sudo apt install -y python3-usb"
+fi
+
+if /usr/bin/python3 -c "import gi" 2>/dev/null; then
+    echo "   ✓ PyGObject instalado"
+else
+    echo "   ⚠ PyGObject não instalado"
+    echo "   Execute: sudo apt install -y python3-gi gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1"
 fi
 
 if python3 -c "import hid" 2>/dev/null; then

@@ -1,0 +1,63 @@
+name: Release
+
+# Deploy automático: quando o CI passa na main e a versão em
+# jbl_quantum910_tray.py (__version__) ainda não tem tag, cria a tag
+# v<versão> e publica um GitHub Release com o pacote pronto para instalar.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SHA }}
+          fetch-depth: 0
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(python3 -c "import ast,sys; t=ast.parse(open('jbl_quantum910_tray.py').read()); print(next(n.value.value for n in t.body if isinstance(n, ast.Assign) and getattr(n.targets[0], 'id', '') == '__version__'))")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+            echo "Tag v${VERSION} já existe; nada a publicar."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build package
+        if: steps.version.outputs.exists == 'false'
+        run: |
+          NAME="jbl-quantum910-tray-${{ steps.version.outputs.version }}"
+          mkdir -p "dist/${NAME}"
+          cp -r jbl_quantum910_tray.py jbl_battery_simple.py install.sh uninstall.sh \
+                setup_udev_rules.sh check_permissions.sh systemd autostart README.md \
+                "dist/${NAME}/"
+          tar -C dist -czf "dist/${NAME}.tar.gz" "${NAME}"
+          (cd dist && sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256")
+
+      - name: Create GitHub Release
+        if: steps.version.outputs.exists == 'false'
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          gh release create "v${VERSION}" dist/*.tar.gz dist/*.sha256 \
+            --target "${SHA}" \
+            --title "v${VERSION}" \
+            --generate-notes

@@ -20,6 +20,11 @@ if [[ ! -x /usr/bin/python3 ]]; then
   exit 1
 fi
 
+if ! /usr/bin/python3 -c "import usb.core" 2>/dev/null; then
+  echo "AVISO: pyusb não encontrado no Python do sistema (sudo apt install -y python3-usb)." >&2
+  echo "       O app usará apenas hidraw." >&2
+fi
+
 mkdir -p "${SHARE_DIR}" "${BIN_DIR}" "${SYSTEMD_DIR}"
 
 echo "==> Copiando app para ${APP_PATH}"
@@ -38,7 +43,8 @@ cp -f "${SERVICE_SRC}" "${SERVICE_DST}"
 
 echo "==> Recarregando systemd (user) e habilitando"
 systemctl --user daemon-reload
-systemctl --user enable --now jbl-quantum910-tray.service
+systemctl --user enable jbl-quantum910-tray.service
+systemctl --user restart jbl-quantum910-tray.service
 
 echo
 echo "OK. Instalado e iniciado."
