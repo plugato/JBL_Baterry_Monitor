@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import json
 import os
 import sys
 import time
@@ -21,7 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-__version__ = "1.1.1"
+__version__ = "1.2.0"
 
 VENDOR_ID_HEX = "0ecb"
 PRODUCT_ID_HEX = "2088"
@@ -148,6 +149,51 @@ class BatterySample:
     source: str
     raw_hex: str
     ts: float
+
+
+CACHE_SOURCE = "cache"
+
+
+def _cache_path() -> str:
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+    return os.path.join(base, "jbl-quantum910-tray", "last_battery.json")
+
+
+def save_cached_battery(sample: BatterySample, path: Optional[str] = None) -> None:
+    """
+    Persist the last real reading. The headset only sends battery reports
+    occasionally and does not answer GET_REPORT with real data, so without this
+    a restart shows no value until the next spontaneous report.
+    """
+    path = path or _cache_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"percent": sample.percent, "ts": sample.ts, "raw_hex": sample.raw_hex}, f)
+        os.replace(tmp, path)
+    except OSError as e:
+        _log(f"Erro ao salvar cache da bateria: {e}")
+
+
+def load_cached_battery(path: Optional[str] = None) -> Optional[BatterySample]:
+    try:
+        with open(path or _cache_path(), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        percent = int(data["percent"])
+        if not 0 <= percent <= 100:
+            return None
+        return BatterySample(percent=percent, source=CACHE_SOURCE, raw_hex=str(data.get("raw_hex", "")), ts=float(data["ts"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _format_age(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    if seconds < 3600:
+        return f"{seconds / 60:.0f}min"
+    return f"{seconds / 3600:.1f}h"
 
 
 @dataclass
@@ -351,7 +397,9 @@ class BatteryTrayApp:
 
         self.Gtk, self.GLib, self.AppIndicator = _import_appindicator()
 
-        self.last_sample: Optional[BatterySample] = None
+        # Start from the last saved reading so a restart doesn't show "?" until
+        # the headset happens to send a new battery report.
+        self.last_sample: Optional[BatterySample] = load_cached_battery()
         self.last_mute_sample: Optional[MuteSample] = None
         self._last_label: Optional[str] = None
         self._last_icon: Optional[str] = None
@@ -381,6 +429,9 @@ class BatteryTrayApp:
         self._render()
         hidraw = self.hidraw_reader.path if self.hidraw_reader else None
         _log(f"Tray iniciado (v{__version__}). prefer_pyusb={self.prefer_pyusb} hidraw={hidraw!s}")
+        if self.last_sample is not None:
+            age = _format_age(max(0.0, time.time() - self.last_sample.ts))
+            _log(f"Último valor salvo: {self.last_sample.percent}% (há {age})")
 
         self.GLib.timeout_add(int(self.refresh_seconds * 1000), self._tick)
 
@@ -463,6 +514,7 @@ class BatteryTrayApp:
                 _log(f"Bateria: {battery_sample.percent}% (fonte={battery_sample.source}, dados={battery_sample.raw_hex})")
                 self._last_logged_percent = battery_sample.percent
                 self._last_logged_error = None
+                save_cached_battery(battery_sample)
         else:
             err = self._last_error()
             if err and err != self._last_logged_error:
@@ -510,10 +562,11 @@ class BatteryTrayApp:
 
         mute_status = "🔇 MUTADO" if self._is_muted else "🎤 Ativo"
         if self.last_sample:
-            age_s = max(0.0, time.time() - self.last_sample.ts)
+            age = _format_age(max(0.0, time.time() - self.last_sample.ts))
+            cached = " (último valor salvo, aguardando nova leitura)" if self.last_sample.source == CACHE_SOURCE else ""
             tip = (
-                f"JBL Quantum910: {self.last_sample.percent}%\nMicrofone: {mute_status}\n"
-                f"Fonte: {self.last_sample.source}\nAtualizado há: {age_s:.0f}s\nDados: {self.last_sample.raw_hex}"
+                f"JBL Quantum910: {self.last_sample.percent}%{cached}\nMicrofone: {mute_status}\n"
+                f"Fonte: {self.last_sample.source}\nAtualizado há: {age}\nDados: {self.last_sample.raw_hex}"
             )
         else:
             extra = f"\nErro: {err}" if err else ""

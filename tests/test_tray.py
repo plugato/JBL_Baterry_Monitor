@@ -82,3 +82,26 @@ def test_hidraw_reader_drains_fifo(tmp_path):
     os.close(w)
     assert battery is not None and battery.percent == 30
     assert mute is None
+
+
+def test_battery_cache_roundtrip(tmp_path):
+    path = str(tmp_path / "sub" / "last_battery.json")
+    assert tray.load_cached_battery(path) is None
+    tray.save_cached_battery(tray.BatterySample(percent=42, source="pyusb", raw_hex="08 2a", ts=123.0), path)
+    cached = tray.load_cached_battery(path)
+    assert cached is not None
+    assert (cached.percent, cached.source, cached.ts) == (42, tray.CACHE_SOURCE, 123.0)
+
+
+def test_battery_cache_rejects_invalid(tmp_path):
+    path = tmp_path / "last_battery.json"
+    path.write_text('{"percent": 250, "ts": 1}')
+    assert tray.load_cached_battery(str(path)) is None
+    path.write_text("not json")
+    assert tray.load_cached_battery(str(path)) is None
+
+
+def test_format_age():
+    assert tray._format_age(5) == "5s"
+    assert tray._format_age(600) == "10min"
+    assert tray._format_age(5400) == "1.5h"
