@@ -96,7 +96,10 @@ Opções úteis:
 ```bash
 python3 ./jbl_quantum910_tray.py --refresh 1.0
 python3 ./jbl_quantum910_tray.py --prefer-hidraw
+python3 ./jbl_quantum910_tray.py --no-number-icon   # ícones de bateria do tema em vez do número
 ```
+
+Por padrão o ícone mostra o número da porcentagem (verde ≥40%, amarelo ≥15%, vermelho abaixo; cinza riscado = microfone mutado). Isso funciona também em painéis que ignoram o texto do AppIndicator, como o COSMIC.
 
 ## 📦 Instalação (recomendado) — inicia com o sistema (login)
 
@@ -117,7 +120,7 @@ chmod +x ./uninstall.sh
 ### Instalar a partir de um Release
 
 ```bash
-VERSION=1.2.0
+VERSION=1.3.0
 curl -LO https://github.com/plugato/JBL_Baterry_Monitor/releases/download/v${VERSION}/jbl-quantum910-tray-${VERSION}.tar.gz
 tar xzf jbl-quantum910-tray-${VERSION}.tar.gz
 cd jbl-quantum910-tray-${VERSION} && ./install.sh

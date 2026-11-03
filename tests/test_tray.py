@@ -105,3 +105,17 @@ def test_format_age():
     assert tray._format_age(5) == "5s"
     assert tray._format_age(600) == "10min"
     assert tray._format_age(5400) == "1.5h"
+
+
+def test_number_icon_svg():
+    svg = tray.render_number_icon_svg(85)
+    assert ">85</text>" in svg and tray.number_icon_color(85) in svg
+    assert "textLength" in tray.render_number_icon_svg(100)
+    assert "<line" in tray.render_number_icon_svg(85, is_muted=True)
+    assert tray.number_icon_color(20) != tray.number_icon_color(5)
+
+
+def test_ensure_number_icon_writes_file(tmp_path):
+    name = tray.ensure_number_icon(42, True, str(tmp_path))
+    assert name == "jbl-quantum910-42-muted"
+    assert any(p.name.startswith(name) for p in tmp_path.iterdir())

@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 VENDOR_ID_HEX = "0ecb"
 PRODUCT_ID_HEX = "2088"
@@ -391,9 +391,10 @@ class PyUsbBatteryReader:
 class BatteryTrayApp:
     HIDRAW_RESCAN_SECONDS = 10.0
 
-    def __init__(self, refresh_seconds: float, prefer_pyusb: bool):
+    def __init__(self, refresh_seconds: float, prefer_pyusb: bool, number_icon: bool = True):
         self.refresh_seconds = max(0.2, refresh_seconds)
         self.prefer_pyusb = prefer_pyusb
+        self.number_icon = number_icon
 
         self.Gtk, self.GLib, self.AppIndicator = _import_appindicator()
 
@@ -418,6 +419,10 @@ class BatteryTrayApp:
             self.AppIndicator.IndicatorCategory.HARDWARE,
         )
         self.indicator.set_status(self.AppIndicator.IndicatorStatus.ACTIVE)
+        self._icon_dir = _number_icon_dir()
+        if self.number_icon:
+            os.makedirs(self._icon_dir, exist_ok=True)
+            self.indicator.set_icon_theme_path(self._icon_dir)
         try:
             self.indicator.set_title("JBL Quantum910 Battery")
         except Exception:
@@ -537,9 +542,17 @@ class BatteryTrayApp:
         self._render()
         return True  # keep timer
 
+    def _icon_name(self, percent: Optional[int]) -> str:
+        if self.number_icon and percent is not None:
+            try:
+                return ensure_number_icon(percent, self._is_muted, self._icon_dir)
+            except OSError as e:
+                _log(f"Erro ao gerar ícone com número: {e}")
+        return battery_icon_name(percent, self._is_muted)
+
     def _render(self):
         percent = self.last_sample.percent if self.last_sample else None
-        icon = battery_icon_name(percent, self._is_muted)
+        icon = self._icon_name(percent)
         if icon != self._last_icon:
             self.indicator.set_icon_full(icon, "JBL Quantum910 Battery")
             self._last_icon = icon
@@ -606,6 +619,63 @@ def battery_icon_name(percent: Optional[int], is_muted: bool = False) -> str:
     return "battery-caution-symbolic"
 
 
+def number_icon_color(percent: int) -> str:
+    if percent >= 40:
+        return "#2e7d32"
+    if percent >= 15:
+        return "#f9a825"
+    return "#c62828"
+
+
+def render_number_icon_svg(percent: int, is_muted: bool = False) -> str:
+    """
+    Square icon with the battery percentage drawn in it. Some trays (e.g. COSMIC)
+    ignore AppIndicator labels and only draw the icon, so the number has to be in it.
+    Muted: gray background with a red strike-through.
+    """
+    text = str(percent)
+    fit = ' textLength="58" lengthAdjust="spacingAndGlyphs"' if len(text) >= 3 else ""
+    size = 34 if len(text) >= 3 else 42
+    bg = "#616161" if is_muted else number_icon_color(percent)
+    strike = '<line x1="6" y1="58" x2="58" y2="6" stroke="#ff1744" stroke-width="7" stroke-linecap="round"/>' if is_muted else ""
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">'
+        f'<rect x="1" y="1" width="62" height="62" rx="14" fill="{bg}"/>'
+        f'<text x="32" y="{32 + size * 0.36:.0f}" text-anchor="middle" font-family="DejaVu Sans, sans-serif" '
+        f'font-weight="bold" font-size="{size}" fill="#ffffff"{fit}>{text}</text>'
+        f"{strike}</svg>"
+    )
+
+
+def _number_icon_dir() -> str:
+    base = os.environ.get("XDG_RUNTIME_DIR") or os.path.dirname(_cache_path())
+    return os.path.join(base, "jbl-quantum910-tray", "icons")
+
+
+def ensure_number_icon(percent: int, is_muted: bool, icon_dir: str) -> str:
+    """Write the icon file (PNG when GdkPixbuf can rasterize SVG, else SVG) and return its icon name."""
+    name = f"jbl-quantum910-{percent}{'-muted' if is_muted else ''}"
+    png, svg_path = os.path.join(icon_dir, f"{name}.png"), os.path.join(icon_dir, f"{name}.svg")
+    if os.path.exists(png) or os.path.exists(svg_path):
+        return name
+    os.makedirs(icon_dir, exist_ok=True)
+    svg = render_number_icon_svg(percent, is_muted)
+    try:
+        import gi  # type: ignore
+
+        gi.require_version("GdkPixbuf", "2.0")
+        from gi.repository import GdkPixbuf  # type: ignore
+
+        loader = GdkPixbuf.PixbufLoader.new_with_type("svg")
+        loader.write(svg.encode("utf-8"))
+        loader.close()
+        loader.get_pixbuf().savev(png, "png", [], [])
+    except Exception:
+        with open(svg_path, "w", encoding="utf-8") as f:
+            f.write(svg)
+    return name
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="JBL Quantum910 tray battery monitor (AppIndicator)")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -625,11 +695,17 @@ def main() -> int:
         action="store_true",
         help="(compat) Ignorado: o comportamento padrão já tenta detach best-effort como no jbl_battery_simple.py",
     )
+    parser.add_argument(
+        "--no-number-icon",
+        action="store_true",
+        help="Usa os ícones de bateria do tema em vez do ícone com o número da porcentagem",
+    )
     args = parser.parse_args()
 
     app = BatteryTrayApp(
         refresh_seconds=args.refresh,
         prefer_pyusb=(not args.prefer_hidraw),
+        number_icon=not args.no_number_icon,
     )
     app.run()
     return 0
