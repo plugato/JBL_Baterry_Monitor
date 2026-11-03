@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 VENDOR_ID_HEX = "0ecb"
 PRODUCT_ID_HEX = "2088"
@@ -122,18 +122,16 @@ def parse_battery_from_packet(packet: bytes) -> Optional[int]:
     return None
 
 
-def parse_mute_from_packet(packet: bytes) -> Optional[tuple[bool, bool]]:
+def parse_mute_from_packet(packet: bytes) -> Optional[bool]:
     """
-    Parse mute status from a packet (Report ID 0x2f).
-    - 0x2f 0x02 = toggle mute (botão pressionado) -> retorna (True, True) = toggle
-    - 0x2f 0x00 = estado desmutado -> retorna (False, False) = desmutado
-    Returns (is_toggle, is_muted) or None if not a mute packet.
+    Parse the microphone mute state (Report ID 0x06): 0x06 0x01 = muted, 0x06 0x00 = unmuted.
+
+    The headset also sends it in the status burst on connect, so it's an absolute state.
+    Report 0x2f is only the button press/release (0x2f 0x02 then 0x2f 0x00 on every press),
+    not the mute state, so it is ignored.
     """
-    if len(packet) >= 2 and packet[0] == 0x2f:
-        if packet[1] == 0x02:
-            return (True, True)  # Toggle - precisa alternar estado
-        elif packet[1] == 0x00:
-            return (False, False)  # Estado desmutado
+    if len(packet) >= 2 and packet[0] == 0x06 and packet[1] in (0x00, 0x01):
+        return packet[1] == 0x01
     return None
 
 
@@ -198,7 +196,6 @@ def _format_age(seconds: float) -> str:
 
 @dataclass
 class MuteSample:
-    is_toggle: bool  # True se é toggle (0x02), False se é estado (0x00)
     muted: bool  # True se mutado, False se desmutado
     source: str
     raw_hex: str
@@ -219,9 +216,8 @@ def _parse_packets(packets, source: str) -> tuple[Optional[BatterySample], Optio
             last_battery = BatterySample(percent=percent, source=source, raw_hex=_hex(data), ts=time.time())
         mute_info = parse_mute_from_packet(data)
         if mute_info is not None:
-            is_toggle, is_muted = mute_info
             last_mute = MuteSample(
-                is_toggle=is_toggle, muted=is_muted, source=source, raw_hex=_hex(data), ts=time.time()
+                muted=mute_info, source=source, raw_hex=_hex(data), ts=time.time()
             )
     return last_battery, last_mute
 
@@ -390,6 +386,7 @@ class PyUsbBatteryReader:
 
 class BatteryTrayApp:
     HIDRAW_RESCAN_SECONDS = 10.0
+    CACHE_SAVE_SECONDS = 60.0
 
     def __init__(self, refresh_seconds: float, prefer_pyusb: bool, number_icon: bool = True):
         self.refresh_seconds = max(0.2, refresh_seconds)
@@ -407,6 +404,8 @@ class BatteryTrayApp:
         self._last_logged_error: Optional[str] = None
         self._last_logged_percent: Optional[int] = None
         self._is_muted: bool = False
+        self._was_stale: Optional[bool] = None
+        self._last_cache_save = 0.0
 
         self.hidraw_reader: Optional[HidrawBatteryReader] = None
         self._last_hidraw_scan = 0.0
@@ -515,11 +514,15 @@ class BatteryTrayApp:
 
         if battery_sample is not None:
             self.last_sample = battery_sample
-            if self._last_logged_percent != battery_sample.percent:
+            percent_changed = self._last_logged_percent != battery_sample.percent
+            if percent_changed:
                 _log(f"Bateria: {battery_sample.percent}% (fonte={battery_sample.source}, dados={battery_sample.raw_hex})")
                 self._last_logged_percent = battery_sample.percent
                 self._last_logged_error = None
+            # Keep the saved timestamp fresh (not only on change) so the age shown after a restart is real.
+            if percent_changed or battery_sample.ts - self._last_cache_save >= self.CACHE_SAVE_SECONDS:
                 save_cached_battery(battery_sample)
+                self._last_cache_save = battery_sample.ts
         else:
             err = self._last_error()
             if err and err != self._last_logged_error:
@@ -528,31 +531,37 @@ class BatteryTrayApp:
 
         if mute_sample is not None:
             self.last_mute_sample = mute_sample
-            if mute_sample.is_toggle:
-                # 0x2f 0x02 é um toggle - alterna o estado
-                self._is_muted = not self._is_muted
-                origem = "toggle detectado"
-            else:
-                # 0x2f 0x00 = estado desmutado
-                self._is_muted = False
-                origem = "estado recebido"
-            status = "🔇 MUTADO" if self._is_muted else "🎤 DESMUTADO"
-            _log(f"Microfone {status} ({origem}, fonte={mute_sample.source}, dados={mute_sample.raw_hex})")
+            if mute_sample.muted != self._is_muted:
+                self._is_muted = mute_sample.muted
+                status = "🔇 MUTADO" if self._is_muted else "🎤 DESMUTADO"
+                _log(f"Microfone {status} (fonte={mute_sample.source}, dados={mute_sample.raw_hex})")
 
         self._render()
         return True  # keep timer
 
-    def _icon_name(self, percent: Optional[int]) -> str:
+    def _is_stale(self) -> bool:
+        """
+        True when the headset is unreachable, so the shown value may be outdated.
+        Not time-based: the headset only reports battery on connect and when the value
+        changes, so a long gap between reports is normal.
+        """
+        return self.last_sample is not None and self._last_error() is not None
+
+    def _icon_name(self, percent: Optional[int], stale: bool) -> str:
         if self.number_icon and percent is not None:
             try:
-                return ensure_number_icon(percent, self._is_muted, self._icon_dir)
+                return ensure_number_icon(percent, self._is_muted, self._icon_dir, stale)
             except OSError as e:
                 _log(f"Erro ao gerar ícone com número: {e}")
         return battery_icon_name(percent, self._is_muted)
 
     def _render(self):
         percent = self.last_sample.percent if self.last_sample else None
-        icon = self._icon_name(percent)
+        stale = self._is_stale()
+        if stale != self._was_stale and self._was_stale is not None:
+            _log("Fone inacessível: valor da bateria pode estar desatualizado" if stale else "Fone acessível novamente")
+        self._was_stale = stale
+        icon = self._icon_name(percent, stale)
         if icon != self._last_icon:
             self.indicator.set_icon_full(icon, "JBL Quantum910 Battery")
             self._last_icon = icon
@@ -576,16 +585,21 @@ class BatteryTrayApp:
         mute_status = "🔇 MUTADO" if self._is_muted else "🎤 Ativo"
         if self.last_sample:
             age = _format_age(max(0.0, time.time() - self.last_sample.ts))
-            cached = " (último valor salvo, aguardando nova leitura)" if self.last_sample.source == CACHE_SOURCE else ""
+            if stale:
+                note = " (pode estar DESATUALIZADO: fone sem comunicação)"
+            elif self.last_sample.source == CACHE_SOURCE:
+                note = " (último valor salvo, aguardando nova leitura)"
+            else:
+                note = ""
             tip = (
-                f"JBL Quantum910: {self.last_sample.percent}%{cached}\nMicrofone: {mute_status}\n"
+                f"JBL Quantum910: {self.last_sample.percent}%{note}\nMicrofone: {mute_status}\n"
                 f"Fonte: {self.last_sample.source}\nAtualizado há: {age}\nDados: {self.last_sample.raw_hex}"
             )
         else:
             extra = f"\nErro: {err}" if err else ""
             tip = (
                 f"JBL Quantum910: sem leitura ainda\nMicrofone: {mute_status}{extra}\n"
-                "Dica: use o fone (volume/botões) para gerar tráfego."
+                "O fone só informa a bateria ao conectar e quando o valor muda."
             )
         # Some implementations show tooltip via icon description:
         try:
@@ -627,22 +641,24 @@ def number_icon_color(percent: int) -> str:
     return "#c62828"
 
 
-def render_number_icon_svg(percent: int, is_muted: bool = False) -> str:
+def render_number_icon_svg(percent: int, is_muted: bool = False, stale: bool = False) -> str:
     """
     Square icon with the battery percentage drawn in it. Some trays (e.g. COSMIC)
     ignore AppIndicator labels and only draw the icon, so the number has to be in it.
-    Muted: gray background with a red strike-through.
+    Muted: red strike-through. Stale (no recent reading / headset not reachable):
+    dark gray with dimmed text, so an old value doesn't look current.
     """
     text = str(percent)
     fit = ' textLength="58" lengthAdjust="spacingAndGlyphs"' if len(text) >= 3 else ""
     size = 34 if len(text) >= 3 else 42
-    bg = "#616161" if is_muted else number_icon_color(percent)
+    bg = "#424242" if stale else number_icon_color(percent)
+    fg = "#9e9e9e" if stale else "#ffffff"
     strike = '<line x1="6" y1="58" x2="58" y2="6" stroke="#ff1744" stroke-width="7" stroke-linecap="round"/>' if is_muted else ""
     return (
         '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">'
         f'<rect x="1" y="1" width="62" height="62" rx="14" fill="{bg}"/>'
         f'<text x="32" y="{32 + size * 0.36:.0f}" text-anchor="middle" font-family="DejaVu Sans, sans-serif" '
-        f'font-weight="bold" font-size="{size}" fill="#ffffff"{fit}>{text}</text>'
+        f'font-weight="bold" font-size="{size}" fill="{fg}"{fit}>{text}</text>'
         f"{strike}</svg>"
     )
 
@@ -652,14 +668,14 @@ def _number_icon_dir() -> str:
     return os.path.join(base, "jbl-quantum910-tray", "icons")
 
 
-def ensure_number_icon(percent: int, is_muted: bool, icon_dir: str) -> str:
+def ensure_number_icon(percent: int, is_muted: bool, icon_dir: str, stale: bool = False) -> str:
     """Write the icon file (PNG when GdkPixbuf can rasterize SVG, else SVG) and return its icon name."""
-    name = f"jbl-quantum910-{percent}{'-muted' if is_muted else ''}"
+    name = f"jbl-quantum910-v2-{percent}{'-muted' if is_muted else ''}{'-stale' if stale else ''}"
     png, svg_path = os.path.join(icon_dir, f"{name}.png"), os.path.join(icon_dir, f"{name}.svg")
     if os.path.exists(png) or os.path.exists(svg_path):
         return name
     os.makedirs(icon_dir, exist_ok=True)
-    svg = render_number_icon_svg(percent, is_muted)
+    svg = render_number_icon_svg(percent, is_muted, stale)
     try:
         import gi  # type: ignore
 

@@ -120,7 +120,7 @@ chmod +x ./uninstall.sh
 ### Instalar a partir de um Release
 
 ```bash
-VERSION=1.3.0
+VERSION=1.4.0
 curl -LO https://github.com/plugato/JBL_Baterry_Monitor/releases/download/v${VERSION}/jbl-quantum910-tray-${VERSION}.tar.gz
 tar xzf jbl-quantum910-tray-${VERSION}.tar.gz
 cd jbl-quantum910-tray-${VERSION} && ./install.sh

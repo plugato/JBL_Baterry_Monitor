@@ -20,17 +20,20 @@ def test_parse_battery_invalid():
 
 
 def test_parse_mute():
-    assert tray.parse_mute_from_packet(bytes([0x2F, 0x02])) == (True, True)
-    assert tray.parse_mute_from_packet(bytes([0x2F, 0x00])) == (False, False)
-    assert tray.parse_mute_from_packet(bytes([0x2F, 0x01])) is None
-    assert tray.parse_mute_from_packet(bytes([0x08, 0x02])) is None
+    assert tray.parse_mute_from_packet(bytes([0x06, 0x01])) is True
+    assert tray.parse_mute_from_packet(bytes([0x06, 0x00])) is False
+    assert tray.parse_mute_from_packet(bytes([0x06, 0x05])) is None
+    # 0x2f is just the button press/release, not the state
+    assert tray.parse_mute_from_packet(bytes([0x2F, 0x02])) is None
+    assert tray.parse_mute_from_packet(bytes([0x2F, 0x00])) is None
 
 
 def test_parse_packets_keeps_latest_battery_and_mute():
-    packets = [bytes([0x08, 50]), bytes([0x2F, 0x02]), bytes([0x08, 49]), bytes([0x01, 0x02])]
+    # Real button press sequence captured from the headset: press, state, release.
+    packets = [bytes([0x08, 50]), bytes([0x2F, 0x02]), bytes([0x06, 0x01]), bytes([0x2F, 0x00]), bytes([0x08, 49])]
     battery, mute = tray._parse_packets(packets, "test")
     assert battery is not None and battery.percent == 49
-    assert mute is not None and mute.is_toggle and mute.raw_hex == "2f 02"
+    assert mute is not None and mute.muted and mute.raw_hex == "06 01"
 
 
 def test_battery_icon_name():
@@ -112,10 +115,12 @@ def test_number_icon_svg():
     assert ">85</text>" in svg and tray.number_icon_color(85) in svg
     assert "textLength" in tray.render_number_icon_svg(100)
     assert "<line" in tray.render_number_icon_svg(85, is_muted=True)
+    assert tray.number_icon_color(85) not in tray.render_number_icon_svg(85, stale=True)
     assert tray.number_icon_color(20) != tray.number_icon_color(5)
 
 
 def test_ensure_number_icon_writes_file(tmp_path):
     name = tray.ensure_number_icon(42, True, str(tmp_path))
-    assert name == "jbl-quantum910-42-muted"
+    assert name == "jbl-quantum910-v2-42-muted"
+    assert tray.ensure_number_icon(42, False, str(tmp_path), stale=True) == "jbl-quantum910-v2-42-stale"
     assert any(p.name.startswith(name) for p in tmp_path.iterdir())
